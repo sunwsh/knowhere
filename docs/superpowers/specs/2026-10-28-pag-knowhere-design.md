@@ -17,6 +17,32 @@ PAG 算法库按 Faiss 的方式放进 `knowhere/thirdparty/pag`，编成静态�
 - 把根目录 `PAG/` 的 CLI、Python、examples、docs 拷进 Knowhere
 - 让拷贝之后的两份 PAG 自动同步
 
+## 与 IVF、HNSW 的对应
+
+IVF 和 HNSW 都有 `Build`。它们没有自己重写这个函数，走的是 Knowhere 的默认实现：对同一批数据先 `Train`，再 `Add`。PAG 的 `Build` 对应的就是这一次完整的 `Build`，也就是 `Train` 加 `Add`，不能拆开，也不能之后再 `Add`。
+
+| 功能 | IVF | HNSW | PAG | 对应关系 |
+|---|---|---|---|---|
+| `Build` | 有。默认实现，等于 `Train` 再 `Add` | 有。同样是 `Train` 再 `Add` | 有。自己实现，一次建完静态图 | PAG 的 `Build` 对应 IVF / HNSW 对全量数据调用一次 `Build` |
+| `Train` | 有。学习聚类中心，倒排表仍是空的 | 有。Flat 基本只标记已训练，图还没建 | 未实现 | 没有单独对应。这部分工作已经包含在 PAG 的 `Build` 里 |
+| `Add` | 有。把向量写入倒排表，可以多次追加 | 有。真正建图和后续插入都在这里 | 未实现 | 没有单独对应。全量插入包含在 PAG 的 `Build` 里，之后不能再追加 |
+| `Search` | 有，支持 bitset | 有，支持 bitset | 有。只支持空 bitset 的 top-k | PAG 的 `Search` 对应 IVF / HNSW 传入空 bitset 的 `Search` |
+| bitset 过滤 | 在 `Search` 里支持 | 在 `Search` 里支持 | 非空 bitset 返回未实现 | 没有对应实现 |
+| `RangeSearch` | 有 | 有 | 未实现 | 没有对应实现 |
+| `AnnIterator` | 有 | 有 | 未实现 | 没有对应实现 |
+| `Serialize` / `Deserialize` | 有。写入 `BinarySet` | 有。写入 `BinarySet` | 有。一条名为 `"PAG"` 的记录 | 三者对应的是同一条内存序列化路径 |
+| `DeserializeFromFile` | 有。从文件 mmap 加载 | 有。从文件 mmap 加载 | 未实现 | 没有对应实现。PAG 只能走 `Deserialize` |
+| `GetVectorByIds` | IVF Flat 有；PQ、SQ 这类不保存原向量的类型没有 | 有。图里保存了可还原的原向量时可用 | 未实现 | 没有对应实现 |
+| `HasRawData` | IVF Flat 为 true，压缩类型为 false | 可还原时为 true | 固定 false | 表示 PAG 不保留可按 ID 读回的原向量 |
+| `GetIndexMeta` | IVF Flat 有 | 未实现 | 未实现 | 没有对应实现 |
+| `CalcDistByIDs` | IVF Flat、IVF FlatCC 有 | 有 | 未实现 | 没有对应实现 |
+| `GetQueryCodeSize` | 有 | 有 | 未实现，调用会抛异常 | 没有对应实现 |
+| `Dim` / `Count` / `Size` / `Type` | 有 | 有 | 有 | 一一对应。PAG 的 `Size` 是打包后的 `index.bin` 字节数 |
+| 数据类型 | fp32、fp16、bf16、int8、binary | fp32、fp16、bf16、int8、binary | 只有 fp32 | PAG 只对应两边的 fp32 版本 |
+| 距离 | `L2`、`IP`、`COSINE` 等 | `L2`、`IP`、`COSINE` 等 | `L2`、`IP`、`COSINE` | 这三个距离一一对应 |
+
+IVF 的 `Train` 学的是聚类中心，`Add` 才把向量放进倒排表。HNSW 的 `Train` 几乎不做建图，真正建图在 `Add`。PAG 没有这个两段式过程，调用方要对全量数据调用一次 `Build`。
+
 ## 指令集
 
 初期只支持 AVX-512。`_mm512_*` 仍留在 `space_l2.h`、`space_ip.h`、`pag_search_primitives.h` 和 `pag_index_core.h` 里。静态库 `pag` 整体使用这些编译选项：
@@ -188,9 +214,29 @@ ID 从 PAG 的 `uint32` 转成 `int64`。结果行数等于查询数，每行 `k
 
 ## 测试
 
-`knowhere/tests/ut/test_pag.cc` 使用 Catch2。`__X86_64` 为假，或编译器不支持 AVX-512 选项时，按 `test_diskann.cc` 的方式把它从测试源文件列表移除。测试在具备上一节那些 AVX-512 特性的 CPU 上运行。
+只把「fp32 的 `Build`、空 bitset 的 top-k `Search`、`BinarySet` 序列化」能覆盖到的用例加进去。依赖 bitset、`RangeSearch`、`AnnIterator`、binary、fp16、bf16、mmap 的用例先不加入。那些 benchmark 在搜索失败时直接取 `result.value()`，不能写成“期望 `not_implemented`”。对应接口实现之后，再按同一张表补上。
 
-测试数据是进程内生成的小型 fp32 集合，不下载外部数据集。覆盖：
+`knowhere_tests` 里的用例要打开 `with_ut` 才会编。当前 `build-linux-test.sh` 不打开它。CPU 没有 AVX-512（含 VNNI）时，`test_pag.cc` 和 `test_search.cc` 里的 PAG 搜索跳过，类型检查仍执行。`__X86_64` 为假或编译器不支持 AVX-512 选项时，不定义 `KNOWHERE_WITH_PAG`，这些 PAG 断言和用例不参与编译。
+
+| 位置 | 用例 | 处理 |
+|---|---|---|
+| `benchmark/hdf5/benchmark_float_qps.cpp` | `TEST_PAG` | 已加入。fp32，按召回率二分 `ef`，再测 QPS |
+| `benchmark/hdf5/benchmark_float.cpp` | `TEST_PAG` | 已加入。fp32，扫 `ef`、`nq`、`k`，打印延迟和召回率。`max_search_k` 取 `TOPKs_` 的最大值 |
+| `tests/ut/test_pag.cc` | `PAG build and search` 等 | 已有。进程内小数据集，覆盖 `L2`、`IP`、`COSINE`、序列化、过大的 `k`、非空 bitset、`Train`、非法 `projection_levels` |
+| `tests/ut/test_search.cc` | `Test Mem Index With Float Vector` / `Test Search` | 已加入。只走 fp32 的 `Build`、`Serialize`、`Deserialize`、`Search`，`max_search_k` 为 128。无 AVX-512 时跳过 |
+| `tests/ut/test_index_check.cc` | 数据类型、mmap、`HasRawData` | 已加入。断言只接受 fp32，不支持 mmap，`HasRawData` 为 false |
+| `benchmark_float_qps.cpp`、`benchmark_float.cpp` | 同一用例里的 fp16、bf16 | 不加。PAG 没有这两种类型 |
+| `benchmark_float.cpp` | `TEST_HNSW_SQ`、`TEST_HNSW_PQ`、`TEST_HNSW_PRQ` | 不加。PAG 没有量化精排 |
+| `benchmark_float_bitset.cpp` | `TEST_IVF_*`、`TEST_HNSW`、`TEST_DISKANN` | 不加。非空 bitset 返回 `not_implemented` |
+| `benchmark_float_range.cpp` | `TEST_IDMAP`、`TEST_IVF_*`、`TEST_HNSW`、`TEST_DISKANN` | 不加。`RangeSearch` 未实现 |
+| `benchmark_float_range_bitset.cpp` | `TEST_IVF_*`、`TEST_HNSW`、`TEST_DISKANN` | 不加。范围搜索和 bitset 都未实现 |
+| `benchmark_binary.cpp`、`benchmark_binary_range.cpp` | `TEST_BINARY_*` | 不加。PAG 没有 binary |
+| `benchmark_simd_qps.cpp`、`benchmark_sparse` | SIMD、稀疏距离 | 不加。不是 PAG 这种稠密索引的用例 |
+| `tests/ut/test_search.cc` | `Test Range Search`、binary、取消范围搜索 | 不加。`RangeSearch` 或 binary 未实现 |
+| `tests/ut/test_iterator.cc` | 各 `AnnIterator` 用例 | 不加。迭代器未实现 |
+| `tests/ut/test_index_node.cc` | embedding-list bitset | 不加。PAG 没有 embedding list，也不做 bitset |
+
+`test_pag.cc` 在 `__X86_64` 为假，或编译器不支持 AVX-512 选项时，按 `test_diskann.cc` 的方式从测试源文件列表移除。功能覆盖仍是：
 
 - `L2`、`IP`、`COSINE` 各完成一次 `Build` 和 `Search`，返回 `k` 个 ID
 - `Serialize` 之后用新索引 `Deserialize`，同一组和 `ef` 的搜索 ID 与距离逐项相等
@@ -198,6 +244,13 @@ ID 从 PAG 的 `uint32` 转成 `int64`。结果行数等于查询数，每行 `k
 - 非空 bitset 返回 `Status::not_implemented`
 - `Train` 返回 `Status::not_implemented`
 - `projection_levels` 不是 8 的倍数时，`Build` 返回 `Status::invalid_param_in_json`
+
+在 AVX-512（含 VNNI）的机器上运行：
+
+```bash
+./dist-amd64/bin/benchmark_float_qps --gtest_filter=Benchmark_float_qps.TEST_PAG
+./dist-amd64/bin/benchmark_float --gtest_filter=Benchmark_float.TEST_PAG
+```
 
 ## 数据流
 

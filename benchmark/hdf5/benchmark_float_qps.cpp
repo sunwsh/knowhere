@@ -12,6 +12,7 @@
 #include <gtest/gtest.h>
 
 #include <thread>
+#include <unordered_set>
 #include <vector>
 
 #include "benchmark_knowhere.h"
@@ -48,14 +49,15 @@ class Benchmark_float_qps : public Benchmark_knowhere, public ::testing::Test {
 
     template <typename T>
     void
-    test_ivf(const knowhere::Json& cfg) {
+    test_ivf(const knowhere::Json& cfg, int32_t search_k = -1) {
         auto conf = cfg;
         auto nlist = conf[knowhere::indexparam::NLIST].get<int32_t>();
         std::string data_type_str = get_data_type_name<T>();
+        const int32_t k = search_k > 0 ? search_k : topk_;
 
         auto find_smallest_nprobe = [&](float expected_recall) -> std::tuple<int32_t, float> {
             std::unordered_map<int32_t, float> recall_map;
-            conf[knowhere::meta::TOPK] = topk_;
+            conf[knowhere::meta::TOPK] = k;
             auto ds_ptr = knowhere::GenDataSet(nq_, dim_, xq_);
             auto query = knowhere::ConvertToDataTypeIfNeeded<T>(ds_ptr);
 
@@ -66,10 +68,10 @@ class Benchmark_float_qps : public Benchmark_knowhere, public ::testing::Test {
                 conf[knowhere::indexparam::NPROBE] = nprobe;
 
                 auto result = index_.value().Search(query, conf, nullptr);
-                recall = CalcRecall(result.value()->GetIds(), nq_, topk_);
+                recall = RecallAt100(result.value()->GetIds(), nq_, k);
                 recall_map[nprobe] = recall;
-                printf("[%0.3f s] iterate IVF param for recall %.4f: nlist=%d, nprobe=%4d, k=%d, R@=%.4f\n",
-                       get_time_diff(), expected_recall, nlist, nprobe, topk_, recall);
+                printf("[%0.3f s] iterate IVF param for recall %.4f: nlist=%d, nprobe=%4d, k=%d, R@%d=%.4f\n",
+                       get_time_diff(), expected_recall, nlist, nprobe, k, recall_k_, recall);
                 std::fflush(stdout);
                 if (std::abs(recall - expected_recall) <= 0.0001) {
                     return {nprobe, recall_map[nprobe]};
@@ -86,10 +88,11 @@ class Benchmark_float_qps : public Benchmark_knowhere, public ::testing::Test {
         for (auto expected_recall : EXPECTED_RECALLs_) {
             auto [nprobe, recall] = find_smallest_nprobe(expected_recall);
             conf[knowhere::indexparam::NPROBE] = nprobe;
-            conf[knowhere::meta::TOPK] = topk_;
+            conf[knowhere::meta::TOPK] = k;
 
-            printf("\n[%0.3f s] %s | %s(%s) | nlist=%d, nprobe=%d, k=%d, R@=%.4f\n", get_time_diff(),
-                   ann_test_name_.c_str(), index_type_.c_str(), data_type_str.c_str(), nlist, nprobe, topk_, recall);
+            printf("\n[%0.3f s] %s | %s(%s) | nlist=%d, nprobe=%d, k=%d, R@%d=%.4f\n", get_time_diff(),
+                   ann_test_name_.c_str(), index_type_.c_str(), data_type_str.c_str(), nlist, nprobe, k, recall_k_,
+                   recall);
             printf("================================================================================\n");
             for (auto thread_num : THREAD_NUMs_) {
                 CALC_TIME_SPAN(task<T>(conf, thread_num, nq_));
@@ -158,29 +161,31 @@ class Benchmark_float_qps : public Benchmark_knowhere, public ::testing::Test {
 
     template <typename T>
     void
-    test_hnsw(const knowhere::Json& cfg) {
+    test_hnsw(const knowhere::Json& cfg, int32_t search_k = -1) {
         auto conf = cfg;
         auto M = conf[knowhere::indexparam::HNSW_M].get<int32_t>();
         auto efConstruction = conf[knowhere::indexparam::EFCONSTRUCTION].get<int32_t>();
         std::string data_type_str = get_data_type_name<T>();
+        const int32_t k = search_k > 0 ? search_k : topk_;
 
         auto find_smallest_ef = [&](float expected_recall) -> std::tuple<int32_t, float> {
             std::unordered_map<int32_t, float> recall_map;
-            conf[knowhere::meta::TOPK] = topk_;
+            conf[knowhere::meta::TOPK] = k;
             auto ds_ptr = knowhere::GenDataSet(nq_, dim_, xq_);
             auto query = knowhere::ConvertToDataTypeIfNeeded<T>(ds_ptr);
 
-            int32_t left = topk_, right = 1024, ef;
+            int32_t left = k, right = k > 1024 ? k : 1024, ef;
             float recall;
             while (left <= right) {
                 ef = left + (right - left) / 2;
                 conf[knowhere::indexparam::EF] = ef;
 
                 auto result = index_.value().Search(query, conf, nullptr);
-                recall = CalcRecall(result.value()->GetIds(), nq_, topk_);
+                recall = RecallAt100(result.value()->GetIds(), nq_, k);
                 recall_map[ef] = recall;
-                printf("[%0.3f s] iterate HNSW param for expected recall %.4f: M=%d, efc=%d, ef=%4d, k=%d, R@=%.4f\n",
-                       get_time_diff(), expected_recall, M, efConstruction, ef, topk_, recall);
+                printf(
+                    "[%0.3f s] iterate HNSW param for expected recall %.4f: M=%d, efc=%d, ef=%4d, k=%d, R@%d=%.4f\n",
+                    get_time_diff(), expected_recall, M, efConstruction, ef, k, recall_k_, recall);
                 std::fflush(stdout);
                 if (std::abs(recall - expected_recall) <= 0.0001) {
                     return {ef, recall_map[ef]};
@@ -197,11 +202,69 @@ class Benchmark_float_qps : public Benchmark_knowhere, public ::testing::Test {
         for (auto expected_recall : EXPECTED_RECALLs_) {
             auto [ef, recall] = find_smallest_ef(expected_recall);
             conf[knowhere::indexparam::EF] = ef;
-            conf[knowhere::meta::TOPK] = topk_;
+            conf[knowhere::meta::TOPK] = k;
 
-            printf("\n[%0.3f s] %s | %s(%s) | M=%d | efConstruction=%d, ef=%d, k=%d, R@=%.4f\n", get_time_diff(),
-                   ann_test_name_.c_str(), index_type_.c_str(), data_type_str.c_str(), M, efConstruction, ef, topk_,
-                   recall);
+            printf("\n[%0.3f s] %s | %s(%s) | M=%d | efConstruction=%d, ef=%d, k=%d, R@%d=%.4f\n", get_time_diff(),
+                   ann_test_name_.c_str(), index_type_.c_str(), data_type_str.c_str(), M, efConstruction, ef, k,
+                   recall_k_, recall);
+            printf("================================================================================\n");
+            for (auto thread_num : THREAD_NUMs_) {
+                CALC_TIME_SPAN(task<T>(conf, thread_num, nq_));
+                printf("  thread_num = %2d, elapse = %6.3fs, VPS = %.3f\n", thread_num, TDIFF_, nq_ / TDIFF_);
+                std::fflush(stdout);
+            }
+            printf("================================================================================\n");
+            printf("[%.3f s] Test '%s/%s' done\n\n", get_time_diff(), ann_test_name_.c_str(), index_type_.c_str());
+        }
+    }
+
+    template <typename T>
+    void
+    test_pag(const knowhere::Json& cfg, int32_t search_k = -1) {
+        auto conf = cfg;
+        auto M = conf[knowhere::indexparam::HNSW_M].get<int32_t>();
+        auto efConstruction = conf[knowhere::indexparam::EFCONSTRUCTION].get<int32_t>();
+        std::string data_type_str = get_data_type_name<T>();
+        const int32_t k = search_k > 0 ? search_k : topk_;
+
+        auto find_smallest_ef = [&](float expected_recall) -> std::tuple<int32_t, float> {
+            std::unordered_map<int32_t, float> recall_map;
+            conf[knowhere::meta::TOPK] = k;
+            auto ds_ptr = knowhere::GenDataSet(nq_, dim_, xq_);
+            auto query = knowhere::ConvertToDataTypeIfNeeded<T>(ds_ptr);
+
+            int32_t left = k, right = k > 1024 ? k : 1024, ef;
+            float recall;
+            while (left <= right) {
+                ef = left + (right - left) / 2;
+                conf[knowhere::indexparam::EF] = ef;
+
+                auto result = index_.value().Search(query, conf, nullptr);
+                recall = RecallAt100(result.value()->GetIds(), nq_, k);
+                recall_map[ef] = recall;
+                printf("[%0.3f s] iterate PAG param for expected recall %.4f: M=%d, efc=%d, ef=%4d, k=%d, R@%d=%.4f\n",
+                       get_time_diff(), expected_recall, M, efConstruction, ef, k, recall_k_, recall);
+                std::fflush(stdout);
+                if (std::abs(recall - expected_recall) <= 0.0001) {
+                    return {ef, recall_map[ef]};
+                }
+                if (recall < expected_recall) {
+                    left = ef + 1;
+                } else {
+                    right = ef - 1;
+                }
+            }
+            return {left, recall_map[left]};
+        };
+
+        for (auto expected_recall : EXPECTED_RECALLs_) {
+            auto [ef, recall] = find_smallest_ef(expected_recall);
+            conf[knowhere::indexparam::EF] = ef;
+            conf[knowhere::meta::TOPK] = k;
+
+            printf("\n[%0.3f s] %s | %s(%s) | M=%d | efConstruction=%d, ef=%d, k=%d, R@%d=%.4f\n", get_time_diff(),
+                   ann_test_name_.c_str(), index_type_.c_str(), data_type_str.c_str(), M, efConstruction, ef, k,
+                   recall_k_, recall);
             printf("================================================================================\n");
             for (auto thread_num : THREAD_NUMs_) {
                 CALC_TIME_SPAN(task<T>(conf, thread_num, nq_));
@@ -332,6 +395,24 @@ class Benchmark_float_qps : public Benchmark_knowhere, public ::testing::Test {
 #endif
 
  private:
+    // Score only the first recall_k_ ids of each result row. result_k is the row stride.
+    float
+    RecallAt100(const int64_t* ids, int32_t nq, int32_t result_k) {
+        const int32_t gt_use = std::min(gt_k_, recall_k_);
+        const int32_t use = std::min(gt_use, result_k);
+        int32_t hit = 0;
+        for (int32_t i = 0; i < nq; i++) {
+            std::unordered_set<int32_t> ground(gt_ids_ + i * gt_k_, gt_ids_ + i * gt_k_ + gt_use);
+            for (int32_t j = 0; j < use; j++) {
+                auto id = ids[i * result_k + j];
+                if (ground.count(static_cast<int32_t>(id)) > 0) {
+                    hit++;
+                }
+            }
+        }
+        return (hit * 1.0f / (nq * gt_use));
+    }
+
     template <typename T>
     void
     task(const knowhere::Json& conf, int32_t worker_num, int32_t nq_total) {
@@ -368,7 +449,7 @@ class Benchmark_float_qps : public Benchmark_knowhere, public ::testing::Test {
         load_hdf5_data<knowhere::fp32>();
 
         cfg_[knowhere::meta::METRIC_TYPE] = metric_type_;
-        knowhere::KnowhereConfig::SetSimdType(knowhere::KnowhereConfig::SimdType::AVX2);
+        knowhere::KnowhereConfig::SetSimdType(knowhere::KnowhereConfig::SimdType::AVX512);
         knowhere::KnowhereConfig::SetBuildThreadPoolSize(default_build_thread_num);
         knowhere::KnowhereConfig::SetSearchThreadPoolSize(default_search_thread_num);
         printf("faiss::distance_compute_blas_threshold: %ld\n", knowhere::KnowhereConfig::GetBlasThreshold());
@@ -391,6 +472,8 @@ class Benchmark_float_qps : public Benchmark_knowhere, public ::testing::Test {
 
  protected:
     const int32_t topk_ = 100;
+    const int32_t recall_k_ = 100;
+    const std::vector<int32_t> search_ks_ = {100, 1000, 2000};
     const std::vector<float> EXPECTED_RECALLs_ = {0.8, 0.95};
     const std::vector<int32_t> THREAD_NUMs_ = {1, 2, 4, 8};
 
@@ -440,9 +523,11 @@ TEST_F(Benchmark_float_qps, TEST_IVF_FLAT) {
         conf[knowhere::indexparam::NLIST] = nlist;
         std::vector<int32_t> params = {nlist};
 
-        TEST_INDEX(ivf, knowhere::fp32, params);
-        TEST_INDEX(ivf, knowhere::fp16, params);
-        TEST_INDEX(ivf, knowhere::bf16, params);
+        index_file_name = get_index_name<knowhere::fp32>(params);
+        create_index<knowhere::fp32>(index_file_name, conf);
+        for (auto search_k : search_ks_) {
+            test_ivf<knowhere::fp32>(conf, search_k);
+        }
     }
 }
 
@@ -483,18 +568,38 @@ TEST_F(Benchmark_float_qps, TEST_IVF_PQ) {
 TEST_F(Benchmark_float_qps, TEST_HNSW) {
     index_type_ = knowhere::IndexEnum::INDEX_HNSW;
 
+    // 与 ann-test 压力测试对齐：M=32，efConstruction=256。
+    const int32_t M = 32;
+    const int32_t efc = 256;
     std::string index_file_name;
     knowhere::Json conf = cfg_;
-    for (auto M : HNSW_Ms_) {
-        conf[knowhere::indexparam::HNSW_M] = M;
-        for (auto efc : EFCONs_) {
-            conf[knowhere::indexparam::EFCONSTRUCTION] = efc;
-            std::vector<int32_t> params = {M, efc};
+    conf[knowhere::indexparam::HNSW_M] = M;
+    conf[knowhere::indexparam::EFCONSTRUCTION] = efc;
+    std::vector<int32_t> params = {M, efc};
 
-            TEST_INDEX(hnsw, knowhere::fp32, params);
-            TEST_INDEX(hnsw, knowhere::fp16, params);
-            TEST_INDEX(hnsw, knowhere::bf16, params);
-        }
+    index_file_name = get_index_name<knowhere::fp32>(params);
+    create_index<knowhere::fp32>(index_file_name, conf);
+    for (auto search_k : search_ks_) {
+        test_hnsw<knowhere::fp32>(conf, search_k);
+    }
+}
+
+TEST_F(Benchmark_float_qps, TEST_PAG) {
+    index_type_ = knowhere::IndexEnum::INDEX_PAG;
+
+    std::string index_file_name;
+    knowhere::Json conf = cfg_;
+    // 与 ann-test 压力测试对齐：target_degree=32，efConstruction=256，projection_levels=16。
+    conf[knowhere::indexparam::HNSW_M] = 32;
+    conf[knowhere::indexparam::EFCONSTRUCTION] = 256;
+    conf["projection_levels"] = 16;
+    conf["max_search_k"] = search_ks_.back();
+    std::vector<int32_t> params = {32, 256, 16, search_ks_.back()};
+
+    index_file_name = get_index_name<knowhere::fp32>(params);
+    create_index<knowhere::fp32>(index_file_name, conf);
+    for (auto search_k : search_ks_) {
+        test_pag<knowhere::fp32>(conf, search_k);
     }
 }
 

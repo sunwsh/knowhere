@@ -11,6 +11,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <vector>
 
 #include "benchmark_knowhere.h"
@@ -451,6 +452,20 @@ TEST_F(Benchmark_float, TEST_HNSW_FLAT) {
             TEST_INDEX(hnsw, knowhere::bf16, params);
         }
     }
+}
+
+TEST_F(Benchmark_float, TEST_PAG) {
+    index_type_ = knowhere::IndexEnum::INDEX_PAG;
+
+    std::string index_file_name;
+    knowhere::Json conf = cfg_;
+    conf[knowhere::indexparam::HNSW_M] = 16;
+    conf[knowhere::indexparam::EFCONSTRUCTION] = 200;
+    conf["max_search_k"] = *std::max_element(TOPKs_.begin(), TOPKs_.end());
+    std::vector<int32_t> params = {16, 200};
+
+    // The ef / nq / k sweep is the same as HNSW flat. PAG only runs fp32.
+    TEST_INDEX(hnsw, knowhere::fp32, params);
 }
 
 TEST_F(Benchmark_float, TEST_HNSW_SQ) {

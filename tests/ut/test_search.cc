@@ -29,10 +29,28 @@
 #include "knowhere/index/index_factory.h"
 #include "knowhere/log.h"
 #include "simd/hook.h"
+#include "simd/instruction_set.h"
 #include "utils.h"
 
 namespace {
 constexpr float kKnnRecallThreshold = 0.6f;
+
+#ifdef KNOWHERE_WITH_PAG
+bool
+PagInstructionSetReady() {
+#if defined(__x86_64__)
+    auto& cpu = faiss::InstructionSet::GetInstance();
+    unsigned int eax = 0;
+    unsigned int ebx = 0;
+    unsigned int ecx = 0;
+    unsigned int edx = 0;
+    const bool vnni = __get_cpuid_count(7, 0, &eax, &ebx, &ecx, &edx) != 0 && (ecx & (1u << 11)) != 0;
+    return cpu.AVX512F() && cpu.AVX512DQ() && cpu.AVX512CD() && cpu.AVX512BW() && cpu.AVX512VL() && vnni;
+#else
+    return false;
+#endif
+}
+#endif
 constexpr float kBruteForceRecallThreshold = 0.95f;
 constexpr const char* kMmapIndexPath = "/tmp/knowhere_dense_mmap_index_test";
 }  // namespace
@@ -132,6 +150,18 @@ TEST_CASE("Test Mem Index With Float Vector", "[float metrics]") {
         return json;
     };
 
+#ifdef KNOWHERE_WITH_PAG
+    auto pag_gen = [base_gen]() {
+        knowhere::Json json = base_gen();
+        json[knowhere::indexparam::HNSW_M] = 16;
+        json[knowhere::indexparam::EFCONSTRUCTION] = 200;
+        json[knowhere::indexparam::EF] = 128;
+        json["max_search_k"] = 128;
+        json["projection_levels"] = 64;
+        return json;
+    };
+#endif
+
     auto ordered_rs_hnsw_gen = [=]() {
         knowhere::Json json = hnsw_gen();
         json[knowhere::meta::RANGE_SEARCH_K] = topk;
@@ -186,12 +216,20 @@ TEST_CASE("Test Mem Index With Float Vector", "[float metrics]") {
              make_tuple(knowhere::IndexEnum::INDEX_FAISS_SCANN, scann_gen),
              make_tuple(knowhere::IndexEnum::INDEX_FAISS_SCANN, scann_gen2),
              make_tuple(knowhere::IndexEnum::INDEX_HNSW, hnsw_gen),
+#ifdef KNOWHERE_WITH_PAG
+             make_tuple(knowhere::IndexEnum::INDEX_PAG, pag_gen),
+#endif
              make_tuple(knowhere::IndexEnum::INDEX_HNSW_SQ, hnsw_gen),
              make_tuple(knowhere::IndexEnum::INDEX_FAISS_IVFRABITQ, ivfrabitq_gen),
              make_tuple(knowhere::IndexEnum::INDEX_FAISS_IVFRABITQ, ivfrabitq_refine_flat_gen)}));
         knowhere::BinarySet bs;
         // build process
         {
+#ifdef KNOWHERE_WITH_PAG
+            if (name == knowhere::IndexEnum::INDEX_PAG && !PagInstructionSetReady()) {
+                SKIP("PAG requires AVX-512");
+            }
+#endif
             auto idx_expected = knowhere::IndexFactory::Instance().Create<knowhere::fp32>(name, version);
             if (name == knowhere::IndexEnum::INDEX_FAISS_SCANN) {
                 // need to check cpu model for scann

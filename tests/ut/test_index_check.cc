@@ -122,6 +122,15 @@ TEST_CASE("Test index and data type check", "[IndexCheckTest]") {
         CHECK(KnowhereCheck::IndexTypeAndDataTypeCheck(IndexEnum::INDEX_DISKANN, VecType::VECTOR_FLOAT16));
         CHECK(KnowhereCheck::IndexTypeAndDataTypeCheck(IndexEnum::INDEX_DISKANN, VecType::VECTOR_BFLOAT16));
 
+#ifdef KNOWHERE_WITH_PAG
+        CHECK(KnowhereCheck::IndexTypeAndDataTypeCheck(IndexEnum::INDEX_PAG, VecType::VECTOR_FLOAT));
+        CHECK_FALSE(KnowhereCheck::IndexTypeAndDataTypeCheck(IndexEnum::INDEX_PAG, VecType::VECTOR_FLOAT16));
+        CHECK_FALSE(KnowhereCheck::IndexTypeAndDataTypeCheck(IndexEnum::INDEX_PAG, VecType::VECTOR_BFLOAT16));
+        CHECK_FALSE(KnowhereCheck::IndexTypeAndDataTypeCheck(IndexEnum::INDEX_PAG, VecType::VECTOR_INT8));
+        CHECK_FALSE(KnowhereCheck::IndexTypeAndDataTypeCheck(IndexEnum::INDEX_PAG, VecType::VECTOR_BINARY));
+        CHECK_FALSE(KnowhereCheck::IndexTypeAndDataTypeCheck(IndexEnum::INDEX_PAG, VecType::VECTOR_FLOAT, true));
+#endif
+
         // sparse index
         CHECK(KnowhereCheck::IndexTypeAndDataTypeCheck(IndexEnum::INDEX_SPARSE_INVERTED_INDEX,
                                                        VecType::VECTOR_SPARSE_FLOAT));
@@ -180,6 +189,10 @@ TEST_CASE("Test support mmap index", "[IndexCheckTest]") {
 #else
         CHECK_FALSE(KnowhereCheck::SupportMmapIndexTypeCheck(IndexEnum::INDEX_DISKANN));
 #endif
+
+#ifdef KNOWHERE_WITH_PAG
+        CHECK_FALSE(KnowhereCheck::SupportMmapIndexTypeCheck(IndexEnum::INDEX_PAG));
+#endif
     }
 }
 
@@ -210,6 +223,10 @@ TEST_CASE("Test index has raw data", "[IndexHasRawData]") {
         CHECK_FALSE(knowhere::IndexStaticFaced<fp32>::HasRawData(IndexEnum::INDEX_HNSW_SQ, ver, {}));
         CHECK_FALSE(knowhere::IndexStaticFaced<fp32>::HasRawData(IndexEnum::INDEX_HNSW_PQ, ver, {}));
         CHECK_FALSE(knowhere::IndexStaticFaced<fp32>::HasRawData(IndexEnum::INDEX_HNSW_PRQ, ver, {}));
+
+#ifdef KNOWHERE_WITH_PAG
+        CHECK_FALSE(knowhere::IndexStaticFaced<fp32>::HasRawData(IndexEnum::INDEX_PAG, ver, {}));
+#endif
 
         // diskann
 #ifdef KNOWHERE_WITH_DISKANN

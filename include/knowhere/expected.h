@@ -52,6 +52,7 @@ enum class Status {
     brute_force_inner_error = 30,
     emb_list_inner_error = 31,
     aisaq_error = 32,
+    pag_inner_error = 33,
 };
 
 inline std::string
@@ -113,6 +114,8 @@ Status2String(knowhere::Status status) {
             return "emb_list inner error";
         case knowhere::Status::aisaq_error:
             return "internal AiSAQ error";
+        case knowhere::Status::pag_inner_error:
+            return "pag inner error";
         default:
             return "unexpected status";
     }
